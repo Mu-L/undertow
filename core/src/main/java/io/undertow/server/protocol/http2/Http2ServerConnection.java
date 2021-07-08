@@ -73,6 +73,11 @@ import io.undertow.util.HeaderMap;
 import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
+import static io.undertow.protocols.http2.Http2Channel.AUTHORITY;
+import static io.undertow.protocols.http2.Http2Channel.METHOD;
+import static io.undertow.protocols.http2.Http2Channel.PATH;
+import static io.undertow.protocols.http2.Http2Channel.SCHEME;
+
 /**
  * A server connection. There is one connection per request
  *
@@ -394,7 +399,10 @@ public class Http2ServerConnection extends ServerConnection {
 
     @Override
     public boolean isPushSupported() {
-        return channel.isPushEnabled() && !exchange.getRequestHeaders().contains(Headers.X_DISABLE_PUSH);
+        return channel.isPushEnabled()
+                && !exchange.getRequestHeaders().contains(Headers.X_DISABLE_PUSH)
+                // push is not supported for already pushed streams, just for peer-initiated (odd) ids
+                && responseChannel.getStreamId() % 2 != 0;
     }
 
     @Override
@@ -411,10 +419,10 @@ public class Http2ServerConnection extends ServerConnection {
     public boolean pushResource(String path, HttpString method, HeaderMap requestHeaders, final HttpHandler handler) {
         HeaderMap responseHeaders = new HeaderMap();
         try {
-            requestHeaders.put(Http2ReceiveListener.METHOD, method.toString());
-            requestHeaders.put(Http2ReceiveListener.PATH, path.toString());
-            requestHeaders.put(Http2ReceiveListener.AUTHORITY, exchange.getHostAndPort());
-            requestHeaders.put(Http2ReceiveListener.SCHEME, exchange.getRequestScheme());
+            requestHeaders.put(METHOD, method.toString());
+            requestHeaders.put(PATH, path.toString());
+            requestHeaders.put(AUTHORITY, exchange.getHostAndPort());
+            requestHeaders.put(SCHEME, exchange.getRequestScheme());
 
             Http2HeadersStreamSinkChannel sink = channel.sendPushPromise(responseChannel.getStreamId(), requestHeaders, responseHeaders);
             Http2ServerConnection newConnection = new Http2ServerConnection(channel, sink, getUndertowOptions(), getBufferSize(), rootHandler);

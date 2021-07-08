@@ -18,6 +18,15 @@
 
 package io.undertow.server.protocol.http2;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.function.Supplier;
+
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
+
+import javax.net.ssl.SSLSession;
+
 import io.undertow.UndertowLogger;
 import io.undertow.UndertowOptions;
 import io.undertow.conduits.HeadStreamSinkConduit;
@@ -33,11 +42,11 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.protocol.http.HttpAttachments;
 import io.undertow.server.protocol.http.HttpContinue;
+import io.undertow.server.protocol.http.HttpRequestParser;
 import io.undertow.util.ConduitFactory;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
 import io.undertow.util.ImmediatePooledByteBuffer;
 import io.undertow.util.Methods;
 import io.undertow.util.ParameterLimitException;
@@ -49,12 +58,10 @@ import org.xnio.OptionMap;
 import org.xnio.channels.Channels;
 import org.xnio.conduits.StreamSinkConduit;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.function.Supplier;
-
-import javax.net.ssl.SSLSession;
+import static io.undertow.protocols.http2.Http2Channel.AUTHORITY;
+import static io.undertow.protocols.http2.Http2Channel.METHOD;
+import static io.undertow.protocols.http2.Http2Channel.PATH;
+import static io.undertow.protocols.http2.Http2Channel.SCHEME;
 
 /**
  * The recieve listener for a Http2 connection.
@@ -64,11 +71,6 @@ import javax.net.ssl.SSLSession;
  * @author Stuart Douglas
  */
 public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
-
-    static final HttpString METHOD = new HttpString(":method");
-    static final HttpString PATH = new HttpString(":path");
-    static final HttpString SCHEME = new HttpString(":scheme");
-    static final HttpString AUTHORITY = new HttpString(":authority");
 
     private final HttpHandler rootHandler;
     private final long maxEntitySize;
@@ -142,6 +144,7 @@ public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
 
         final HttpServerExchange exchange = new HttpServerExchange(connection, dataChannel.getHeaders(), dataChannel.getResponseChannel().getHeaders(), maxEntitySize);
 
+
         dataChannel.setTrailersHandler(new Http2StreamSourceChannel.TrailersHandler() {
             @Override
             public void handleTrailers(HeaderMap headerMap) {
@@ -210,11 +213,9 @@ public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
      * @param initial The initial upgrade request that started the HTTP2 connection
      */
     void handleInitialRequest(HttpServerExchange initial, Http2Channel channel, byte[] data) {
-
         //we have a request
         Http2HeadersStreamSinkChannel sink = channel.createInitialUpgradeResponseStream();
         final Http2ServerConnection connection = new Http2ServerConnection(channel, sink, undertowOptions, bufferSize, rootHandler);
-
 
         HeaderMap requestHeaders = new HeaderMap();
         for(HeaderValues hv : initial.getRequestHeaders()) {
@@ -232,11 +233,10 @@ public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
         exchange.setRequestScheme(initial.getRequestScheme());
         exchange.setRequestMethod(initial.getRequestMethod());
         exchange.setQueryString(initial.getQueryString());
-        if(data != null) {
+        if (data != null) {
             Connectors.ungetRequestBytes(exchange, new ImmediatePooledByteBuffer(ByteBuffer.wrap(data)));
-        } else {
-            Connectors.terminateRequest(exchange);
         }
+        Connectors.terminateRequest(exchange);
         String uri = exchange.getQueryString().isEmpty() ? initial.getRequestURI() : initial.getRequestURI() + '?' + exchange.getQueryString();
         try {
             Connectors.setExchangeRequestPath(exchange, uri, encoding, decode, allowEncodingSlash, decodeBuffer, maxParameters);
@@ -245,7 +245,6 @@ public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
             exchange.endExchange();
             return;
         }
-
 
         handleCommonSetup(sink, exchange, connection);
         Connectors.executeRootHandler(rootHandler, exchange);
@@ -318,6 +317,38 @@ public class Http2ReceiveListener implements ChannelListener<Http2Channel> {
             }
         }
 
+        // verify content of request pseudo-headers. Each header should only have a single value.
+        if (headers.contains(PATH)) {
+            for (byte b: headers.get(PATH).getFirst().getBytes(ISO_8859_1)) {
+                if (!HttpRequestParser.isTargetCharacterAllowed((char)b)){
+                    return false;
+                }
+            }
+        }
+
+        if (headers.contains(SCHEME)) {
+            for (byte b: headers.get(SCHEME).getFirst().getBytes(ISO_8859_1)) {
+                if (!Connectors.isValidSchemeCharacter(b)){
+                    return false;
+                }
+            }
+        }
+
+        if (headers.contains(AUTHORITY)) {
+            for (byte b: headers.get(AUTHORITY).getFirst().getBytes(ISO_8859_1)) {
+                if (!HttpRequestParser.isTargetCharacterAllowed((char)b)){
+                    return false;
+                }
+            }
+        }
+
+        if (headers.contains(METHOD)) {
+            for (byte b: headers.get(METHOD).getFirst().getBytes(ISO_8859_1)) {
+                if (!Connectors.isValidTokenCharacter(b)){
+                    return false;
+                }
+            }
+        }
         return true;
     }
 }
